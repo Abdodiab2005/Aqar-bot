@@ -190,28 +190,26 @@ class AqarBot {
 
           if (!searchData) {
             console.log(
-              `⚠️  Step 2: Project ${resource_id} not found in Search API - skipping`
+              `⚠️  Step 2: Project ${resource_id} not found in Search API - Proceeding to Validation (Step 3)`
             );
-            notificationData.step2_search = "not_found";
-            notifications.push(notificationData);
-            await this.database.updateUnitCount(resource_id, count);
-            continue;
+            notificationData.step2_search = "not_found_proceeding";
+            // Do not skip, proceed to Step 3
+          } else {
+            const isBookable =
+              searchData.bookable === true || searchData.bookable === 1;
+            const searchUnits = searchData.available_units_count || 0;
+
+            console.log(`📋 Step 2: Search API check for ${resource_id}:`);
+            console.log(`   bookable: ${isBookable}`);
+            console.log(`   available_units_count: ${searchUnits}`);
+
+            // MODIFIED: Proceed to Step 3 even if Search API shows 0 units or is not bookable
+            // We rely on Step 3 (Validation) as the source of truth
+            console.log(
+              `✅ Step 2: Project found in Search API. Proceeding to Validation...`
+            );
+            notificationData.step2_search = "passed";
           }
-
-          const isBookable =
-            searchData.bookable === true || searchData.bookable === 1;
-          const searchUnits = searchData.available_units_count || 0;
-
-          console.log(`📋 Step 2: Search API check for ${resource_id}:`);
-          console.log(`   bookable: ${isBookable}`);
-          console.log(`   available_units_count: ${searchUnits}`);
-
-          // MODIFIED: Proceed to Step 3 even if Search API shows 0 units or is not bookable
-          // We rely on Step 3 (Validation) as the source of truth
-          console.log(
-            `✅ Step 2: Project found in Search API. Proceeding to Validation...`
-          );
-          notificationData.step2_search = "passed";
 
           // STEP 3 VALIDATION: Final confirmation with mainIntermediaryApi
           console.log(
