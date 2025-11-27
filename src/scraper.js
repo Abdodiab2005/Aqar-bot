@@ -114,25 +114,29 @@ class Scraper {
 
   /**
    * Normalize Search API response into structured project objects
-   * @param {Array} rawData - Raw data from Search API
+   * @param {Array} rawData - Raw data from Search API (data array)
    * @returns {Array} Normalized project objects with all metadata
    */
   _normalizeSearchResponse(rawData) {
-    return rawData.map((item) => ({
-      resource_id: item.attributes.resource_id,
-      project_name: item.attributes.project_name,
-      available_units_count: item.attributes.units_statistic_data?.available_units_count || 0,
-      min_non_bene_price: item.attributes.units_statistic_data?.min_non_bene_price || 0,
-      location_lat: item.attributes.location?.lat || null,
-      location_lon: item.attributes.location?.lon || null,
-      city: item.attributes.city_obj?.name_ar || "",
-      region: item.attributes.region_obj?.name_ar || "",
-      project_type: item.attributes.project_type,
-      views_count: item.attributes.views_count || 0,
-      developer_name: item.attributes.developer_name || "",
-      banner_url: item.attributes.banner_url || "",
-      bookable: item.attributes.bookable || false,
-    }));
+    return rawData.map((item) => {
+      const attrs = item.attributes;
+
+      return {
+        resource_id: attrs.resource_id,
+        project_name: attrs.project_name,
+        available_units_count: attrs.available_units_count || 0,
+        min_non_bene_price: attrs.min_non_bene_price || 0,
+        location_lat: attrs.location?.lat || null,
+        location_lon: attrs.location?.lon || null,
+        city: attrs.city_obj?.name_ar || "",
+        region: attrs.region_obj?.name_ar || "",
+        project_type: attrs.project_type,
+        views_count: attrs.views_count || 0,
+        developer_name: attrs.developer_name || "",
+        banner_url: attrs.banner_url || "",
+        bookable: attrs.bookable || false,
+      };
+    });
   }
 
   /**
@@ -186,6 +190,8 @@ class Scraper {
         return null;
       }
 
+      console.log(response.data);
+
       const project = response.data.data;
       const attrs = project.attributes;
 
@@ -204,7 +210,8 @@ class Scraper {
 
       // Critical validation checks
       const isBookable = attrs.bookable === true;
-      const availableUnits = attrs.units_statistic_data?.available_units_count || 0;
+      const availableUnits =
+        attrs.units_statistic_data?.available_units_count || 0;
       const hasUnits = availableUnits > 0;
 
       console.log(`   bookable: ${isBookable}`);
@@ -212,7 +219,9 @@ class Scraper {
 
       // Both conditions must be true
       if (!isBookable || !hasUnits) {
-        console.log(`❌ Validation failed for ${resourceId}: bookable=${isBookable}, units=${availableUnits}`);
+        console.log(
+          `❌ Validation failed for ${resourceId}: bookable=${isBookable}, units=${availableUnits}`
+        );
         return null;
       }
 
