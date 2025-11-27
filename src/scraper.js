@@ -121,14 +121,17 @@ class Scraper {
     return rawData.map((item) => ({
       resource_id: item.attributes.resource_id,
       project_name: item.attributes.project_name,
-      available_units_count: item.attributes.available_units_count || 0,
-      min_non_bene_price: item.attributes.min_non_bene_price || 0,
+      available_units_count: item.attributes.units_statistic_data?.available_units_count || 0,
+      min_non_bene_price: item.attributes.units_statistic_data?.min_non_bene_price || 0,
       location_lat: item.attributes.location?.lat || null,
       location_lon: item.attributes.location?.lon || null,
+      city: item.attributes.city_obj?.name_ar || "",
+      region: item.attributes.region_obj?.name_ar || "",
       project_type: item.attributes.project_type,
       views_count: item.attributes.views_count || 0,
       developer_name: item.attributes.developer_name || "",
       banner_url: item.attributes.banner_url || "",
+      bookable: item.attributes.bookable || false,
     }));
   }
 

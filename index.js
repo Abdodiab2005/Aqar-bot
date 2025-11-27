@@ -34,21 +34,18 @@ class AqarBot {
       adminIds
     );
 
-    this.indexerInterval = parseInt(process.env.INDEXER_INTERVAL || '60', 10); // minutes
-    this.watcherInterval = parseInt(process.env.WATCHER_INTERVAL || '10', 10);  // seconds
+    this.checkInterval = parseInt(process.env.CHECK_INTERVAL || '1', 10); // minutes
 
-    this.indexerTimerId = null;
-    this.watcherTimerId = null;
-    this.isIndexing = false;
-    this.isWatching = false;
-    this.isFirstWatcherRun = true; // Track first run to avoid spam
+    this.checkTimerId = null;
+    this.isChecking = false;
+    this.isFirstRun = true; // Track first run to avoid spam
   }
 
   /**
    * Validate required environment variables
    */
   validateConfig() {
-    const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_ADMIN_IDS', 'COUNTERS_API_URL'];
+    const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_ADMIN_IDS', 'COUNTERS_API_URL', 'SEARCH_API_URL'];
     const missing = required.filter(key => !process.env[key]);
 
     if (missing.length > 0) {
@@ -80,15 +77,15 @@ class AqarBot {
    */
   async initialize() {
     try {
-      console.log('🚀 Starting Aqar Bot with Verify-Before-Alert Strategy...');
-      console.log(`⚡ Watcher interval: ${this.watcherInterval} seconds`);
-      console.log(`🔍 Validation: Each trigger verified with mainIntermediaryApi`);
+      console.log('🚀 Starting Aqar Bot with 3-Step Verification...');
+      console.log(`⏱  Check interval: ${this.checkInterval} minute(s)`);
+      console.log(`🔍 Verification: Counters → Search → Validation`);
 
       await this.database.initialize();
       console.log('✅ Database initialized');
 
-      // Schedule Watcher only (validation happens on-demand)
-      this.scheduleWatcher();
+      // Schedule checks
+      this.scheduleChecks();
 
       console.log('✅ Bot running and monitoring for availability changes');
     } catch (error) {
@@ -99,142 +96,172 @@ class AqarBot {
   }
 
   /**
-   * Schedule periodic Watcher runs
+   * Schedule periodic checks
    */
-  scheduleWatcher() {
-    const intervalMs = this.watcherInterval * 1000; // Convert seconds to ms
+  scheduleChecks() {
+    const intervalMs = this.checkInterval * 60 * 1000; // Convert minutes to ms
 
-    this.watcherTimerId = setInterval(async () => {
-      await this.runWatcher();
+    this.checkTimerId = setInterval(async () => {
+      await this.runCheck();
     }, intervalMs);
 
-    console.log(`⚡ Watcher scheduled: every ${this.watcherInterval} seconds`);
+    console.log(`⏰ Checks scheduled: every ${this.checkInterval} minute(s)`);
   }
 
   /**
-   * Watcher: Monitor unit count changes from Counters API
-   * Runs every WATCHER_INTERVAL seconds
+   * Main Check: 3-Step Verification Process
+   * Runs every CHECK_INTERVAL minutes
    */
-  async runWatcher() {
-    if (this.isWatching) {
-      console.log('⏭️  Skipping Watcher - previous run still in progress');
+  async runCheck() {
+    if (this.isChecking) {
+      console.log('⏭️  Skipping check - previous check still in progress');
       return;
     }
 
-    this.isWatching = true;
+    this.isChecking = true;
     const timestamp = new Date().toLocaleString('en-US', { timeZone: 'Asia/Riyadh' });
 
     try {
-      const counters = await this.scraper.fetchCountersAPI();
+      console.log(`\n🔍 [${timestamp}] Starting 3-step verification process...`);
 
-      // Save raw response to log file
-      this.saveJsonLog('watcher_response.json', {
-        timestamp,
-        totalProjects: counters.length,
-        counters
-      });
+      // STEP 1: Fetch Counters API (Source A)
+      console.log(`📊 Step 1: Fetching counters...`);
+      const counters = await this.scraper.fetchCountersAPI();
+      console.log(`✅ Received ${counters.length} project counters`);
+
+      // STEP 2: Fetch Search API (Source B - for verification data)
+      console.log(`📊 Step 2: Fetching search data...`);
+      const searchProjects = await this.scraper.fetchSearchAPI();
+      console.log(`✅ Received ${searchProjects.length} search projects`);
+
+      // Create lookup map for search data
+      const searchMap = new Map();
+      searchProjects.forEach(p => searchMap.set(p.resource_id, p));
 
       let notificationCount = 0;
-      const notifications = []; // Track what we're notifying
+      const notifications = [];
 
-      // On first run, just initialize counts without sending notifications
-      if (this.isFirstWatcherRun) {
-        console.log('⏳ First Watcher run - initializing unit counts without notifications...');
-        console.log(`📊 Total counters received: ${counters.length}`);
-
-        // Log sample counters
-        counters.slice(0, 5).forEach(c => {
-          console.log(`  - Resource ID: ${c.resource_id}, Count: ${c.count}`);
-        });
-
+      // On first run, just initialize counts
+      if (this.isFirstRun) {
+        console.log('⏳ First run - initializing database...');
         for (const {resource_id, count} of counters) {
           await this.database.updateUnitCount(resource_id, count);
         }
-        console.log(`✅ Initialized unit counts for ${counters.length} projects`);
-        this.isFirstWatcherRun = false;
-        this.isWatching = false;
+        console.log(`✅ Initialized ${counters.length} projects`);
+        this.isFirstRun = false;
+        this.isChecking = false;
         return;
       }
 
-      console.log(`\n⚡ [${timestamp}] Watcher: Processing ${counters.length} projects...`);
+      console.log(`\n⚡ Processing ${counters.length} projects...`);
 
       for (const {resource_id, count} of counters) {
         const previousCount = await this.database.getUnitCount(resource_id);
 
-        // Trigger condition: (previousCount === 0 OR previousCount === null) AND currentCount > 0
+        // Trigger: 0→N transition
         if ((previousCount === null || previousCount === 0) && count > 0) {
-          console.log(`\n🚨 Detected availability change for project ${resource_id}: ${previousCount || 0} → ${count}`);
-
-          // CRITICAL: Verify-Before-Alert - Validate with project-specific API
-          console.log(`🔍 Step 1: Validating project ${resource_id} with mainIntermediaryApi...`);
-          const validatedProject = await this.scraper.validateProject(resource_id);
+          console.log(`\n🚨 Trigger detected for project ${resource_id}: ${previousCount || 0} → ${count}`);
 
           const notificationData = {
             resource_id,
-            count,
+            counterCount: count,
             previousCount,
-            validationPassed: !!validatedProject
+            step1_counters: 'passed',
+            step2_search: null,
+            step3_validation: null
           };
 
-          if (validatedProject) {
-            // Validation passed - send notification
-            notificationData.project_name = validatedProject.project_name;
-            notificationData.price = validatedProject.min_non_bene_price;
-            notificationData.location = {
-              lat: validatedProject.location_lat,
-              lon: validatedProject.location_lon,
-              city: validatedProject.city,
-              region: validatedProject.region
-            };
-            notificationData.bookable = validatedProject.bookable;
+          // STEP 2 VERIFICATION: Check Search API data
+          const searchData = searchMap.get(resource_id);
 
-            console.log(`\n📤 Step 2: Sending notification for project ${resource_id}:`);
-            console.log(`   Name: ${validatedProject.project_name}`);
-            console.log(`   Location: ${validatedProject.city} - ${validatedProject.region}`);
-            console.log(`   Price: ${validatedProject.min_non_bene_price} SAR`);
-            console.log(`   Units: ${validatedProject.available_units_count}`);
-            console.log(`   Bookable: ${validatedProject.bookable}`);
-            console.log(`   Developer: ${validatedProject.developer_name || 'N/A'}`);
-
-            // Save validated project to database
-            await this.database.upsertProjectMetadata(validatedProject);
-
-            // Send notification
-            await this.notifier.sendNotification(validatedProject, 'restocked');
-            console.log(`✅ Notification sent successfully`);
-
-            notificationCount++;
-          } else {
-            // Validation failed - this is a FALSE POSITIVE, ignore it
-            console.log(`❌ Step 2: Validation failed for ${resource_id} - Not bookable or no units available`);
-            console.log(`   Action: Ignoring false positive (Counter showed ${count} but validation failed)`);
-            notificationData.reason = 'false_positive';
+          if (!searchData) {
+            console.log(`⚠️  Step 2: Project ${resource_id} not found in Search API - skipping`);
+            notificationData.step2_search = 'not_found';
+            notifications.push(notificationData);
+            await this.database.updateUnitCount(resource_id, count);
+            continue;
           }
 
+          const isBookable = searchData.bookable === true || searchData.bookable === 1;
+          const searchUnits = searchData.available_units_count || 0;
+
+          console.log(`📋 Step 2: Search API check for ${resource_id}:`);
+          console.log(`   bookable: ${isBookable}`);
+          console.log(`   available_units_count: ${searchUnits}`);
+
+          // Edge Case: Trust Search API over Counters if mismatch
+          if (searchUnits === 0) {
+            console.log(`❌ Step 2: GHOST LISTING detected - Search API shows 0 units (Counter shows ${count})`);
+            console.log(`   Action: Trusting Search API, ignoring counter`);
+            notificationData.step2_search = 'ghost_listing';
+            notifications.push(notificationData);
+            await this.database.updateUnitCount(resource_id, count);
+            continue;
+          }
+
+          if (!isBookable) {
+            console.log(`❌ Step 2: Project ${resource_id} is NOT bookable - skipping`);
+            notificationData.step2_search = 'not_bookable';
+            notifications.push(notificationData);
+            await this.database.updateUnitCount(resource_id, count);
+            continue;
+          }
+
+          console.log(`✅ Step 2: Search verification passed`);
+          notificationData.step2_search = 'passed';
+
+          // STEP 3 VALIDATION: Final confirmation with mainIntermediaryApi
+          console.log(`🔍 Step 3: Final validation with mainIntermediaryApi...`);
+          const validatedProject = await this.scraper.validateProject(resource_id);
+
+          if (!validatedProject) {
+            console.log(`❌ Step 3: Validation failed for ${resource_id}`);
+            notificationData.step3_validation = 'failed';
+            notifications.push(notificationData);
+            await this.database.updateUnitCount(resource_id, count);
+            continue;
+          }
+
+          console.log(`✅ Step 3: Validation passed`);
+          notificationData.step3_validation = 'passed';
+          notificationData.project_name = validatedProject.project_name;
+          notificationData.finalUnits = validatedProject.available_units_count;
+
+          // ALL CHECKS PASSED - SEND NOTIFICATION
+          console.log(`\n📤 All checks passed - Sending notification:`);
+          console.log(`   Name: ${validatedProject.project_name}`);
+          console.log(`   Location: ${validatedProject.city} - ${validatedProject.region}`);
+          console.log(`   Price: ${validatedProject.min_non_bene_price} SAR`);
+          console.log(`   Units: ${validatedProject.available_units_count}`);
+
+          await this.database.upsertProjectMetadata(validatedProject);
+          await this.notifier.sendNotification(validatedProject, 'available');
+          console.log(`✅ Notification sent successfully`);
+
+          notificationCount++;
           notifications.push(notificationData);
         }
 
-        // Always update the count
+        // Always update counter
         await this.database.updateUnitCount(resource_id, count);
       }
 
       if (notificationCount > 0) {
-        console.log(`\n⚡ Watcher: Sent ${notificationCount} notifications`);
-
-        // Save notification details to log
-        this.saveJsonLog('watcher_notifications.json', {
+        console.log(`\n🎯 Check complete: Sent ${notificationCount} verified notifications`);
+        this.saveJsonLog('notifications.json', {
           timestamp,
           totalNotifications: notificationCount,
           notifications
         });
+      } else {
+        console.log(`\nℹ️  Check complete: No new opportunities found`);
       }
     } catch (error) {
-      console.error('❌ Watcher error:', error.message);
-      this.saveJsonLog('watcher_error.json', { error: error.message, stack: error.stack });
-      // Don't spam admin on every Watcher error (runs every 10 seconds)
-      // Only log to console unless it's critical
+      console.error('❌ Check error:', error.message);
+      this.saveJsonLog('check_error.json', { error: error.message, stack: error.stack });
+      await this.notifier.sendErrorNotification(`Check failed: ${error.message}`);
     } finally {
-      this.isWatching = false;
+      this.isChecking = false;
     }
   }
 
@@ -244,8 +271,8 @@ class AqarBot {
   async shutdown() {
     console.log('\n🛑 Shutting down bot...');
 
-    if (this.watcherTimerId) {
-      clearInterval(this.watcherTimerId);
+    if (this.checkTimerId) {
+      clearInterval(this.checkTimerId);
     }
 
     await this.database.close();
