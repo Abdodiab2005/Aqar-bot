@@ -14,7 +14,10 @@ class AqarBot {
     this.validateConfig();
 
     this.database = new Database(process.env.DB_PATH || './data/projects.db');
-    this.scraper = new Scraper(process.env.API_URL);
+    this.scraper = new Scraper(
+      process.env.SEARCH_API_URL,
+      process.env.COUNTERS_API_URL
+    );
 
     // Parse comma-separated admin IDs
     const adminIds = process.env.TELEGRAM_ADMIN_IDS.split(',').map(id => id.trim());
@@ -23,16 +26,21 @@ class AqarBot {
       adminIds
     );
 
-    this.scrapeInterval = parseInt(process.env.SCRAPE_INTERVAL || '30', 10);
-    this.intervalId = null;
-    this.isProcessing = false;
+    this.indexerInterval = parseInt(process.env.INDEXER_INTERVAL || '60', 10); // minutes
+    this.watcherInterval = parseInt(process.env.WATCHER_INTERVAL || '10', 10);  // seconds
+
+    this.indexerTimerId = null;
+    this.watcherTimerId = null;
+    this.isIndexing = false;
+    this.isWatching = false;
+    this.isFirstWatcherRun = true; // Track first run to avoid spam
   }
 
   /**
    * Validate required environment variables
    */
   validateConfig() {
-    const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_ADMIN_IDS', 'API_URL'];
+    const required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_ADMIN_IDS', 'SEARCH_API_URL', 'COUNTERS_API_URL'];
     const missing = required.filter(key => !process.env[key]);
 
     if (missing.length > 0) {
@@ -48,19 +56,23 @@ class AqarBot {
    */
   async initialize() {
     try {
-      console.log('🚀 Starting Aqar Bot...');
-      console.log(`📊 Scrape interval: ${this.scrapeInterval} seconds`);
+      console.log('🚀 Starting Aqar Bot with Hybrid Architecture...');
+      console.log(`📚 Indexer interval: ${this.indexerInterval} minutes`);
+      console.log(`⚡ Watcher interval: ${this.watcherInterval} seconds`);
 
       await this.database.initialize();
       console.log('✅ Database initialized');
 
-      // Run first check immediately
-      await this.checkForUpdates();
+      // Run Indexer immediately to populate database
+      console.log('⏳ Running initial Indexer to populate database...');
+      await this.runIndexer();
+      console.log('✅ Initial indexing complete');
 
-      // Schedule periodic checks
-      this.scheduleChecks();
+      // Schedule both schedulers
+      this.scheduleIndexer();
+      this.scheduleWatcher();
 
-      console.log('✅ Bot is running and monitoring for updates');
+      console.log('✅ Bot running with hybrid architecture');
     } catch (error) {
       console.error('❌ Failed to initialize bot:', error.message);
       await this.notifier.sendErrorNotification(`Initialization failed: ${error.message}`);
@@ -69,86 +81,126 @@ class AqarBot {
   }
 
   /**
-   * Schedule periodic API checks
+   * Schedule periodic Indexer runs
    */
-  scheduleChecks() {
-    const intervalMs = this.scrapeInterval * 1000;
+  scheduleIndexer() {
+    const intervalMs = this.indexerInterval * 60 * 1000; // Convert minutes to ms
 
-    this.intervalId = setInterval(async () => {
-      await this.checkForUpdates();
+    this.indexerTimerId = setInterval(async () => {
+      await this.runIndexer();
     }, intervalMs);
 
-    console.log(`⏰ Scheduled checks every ${this.scrapeInterval} seconds`);
+    console.log(`📚 Indexer scheduled: every ${this.indexerInterval} minutes`);
   }
 
   /**
-   * Main logic: Check for updates and send notifications
+   * Schedule periodic Watcher runs
    */
-  async checkForUpdates() {
-    if (this.isProcessing) {
-      console.log('⏭️  Skipping check - previous check still in progress');
+  scheduleWatcher() {
+    const intervalMs = this.watcherInterval * 1000; // Convert seconds to ms
+
+    this.watcherTimerId = setInterval(async () => {
+      await this.runWatcher();
+    }, intervalMs);
+
+    console.log(`⚡ Watcher scheduled: every ${this.watcherInterval} seconds`);
+  }
+
+  /**
+   * Indexer: Fetch and update project metadata from Search API
+   * Runs every INDEXER_INTERVAL minutes
+   */
+  async runIndexer() {
+    if (this.isIndexing) {
+      console.log('⏭️  Skipping Indexer - previous run still in progress');
       return;
     }
 
-    this.isProcessing = true;
+    this.isIndexing = true;
     const timestamp = new Date().toLocaleString('en-US', { timeZone: 'Asia/Riyadh' });
 
     try {
-      console.log(`\n🔍 [${timestamp}] Checking for updates...`);
+      console.log(`\n📚 [${timestamp}] Indexer: Fetching project metadata...`);
 
-      const projects = await this.scraper.fetchProjects();
-      console.log(`📦 Fetched ${projects.length} projects from API`);
-
-      let newCount = 0;
-      let restockedCount = 0;
+      const projects = await this.scraper.fetchSearchAPI();
+      console.log(`📦 Indexer: Fetched ${projects.length} projects`);
 
       for (const project of projects) {
-        await this.processProject(project, (reason) => {
-          if (reason === 'new_listing') newCount++;
-          if (reason === 'restocked') restockedCount++;
-        });
+        await this.database.upsertProjectMetadata(project);
       }
 
-      if (newCount > 0 || restockedCount > 0) {
-        console.log(`✅ Sent ${newCount} new listings and ${restockedCount} restock notifications`);
-      } else {
-        console.log('ℹ️  No new updates found');
-      }
+      console.log(`✅ Indexer: Updated metadata for ${projects.length} projects`);
     } catch (error) {
-      console.error('❌ Error during update check:', error.message);
-      await this.notifier.sendErrorNotification(`Update check failed: ${error.message}`);
+      console.error('❌ Indexer error:', error.message);
+      await this.notifier.sendErrorNotification(`Indexer failed: ${error.message}`);
     } finally {
-      this.isProcessing = false;
+      this.isIndexing = false;
     }
   }
 
   /**
-   * Process individual project
-   * @param {object} project - Project data from API
-   * @param {function} onNotify - Callback when notification is sent
+   * Watcher: Monitor unit count changes from Counters API
+   * Runs every WATCHER_INTERVAL seconds
    */
-  async processProject(project, onNotify) {
+  async runWatcher() {
+    if (this.isWatching) {
+      console.log('⏭️  Skipping Watcher - previous run still in progress');
+      return;
+    }
+
+    this.isWatching = true;
+
     try {
-      const { shouldNotify, reason } = await this.database.shouldNotify(project);
+      const counters = await this.scraper.fetchCountersAPI();
 
-      if (shouldNotify) {
-        await this.notifier.sendNotification(project, reason);
-        console.log(`📤 Notification sent: ${project.project_name} (${reason})`);
+      let notificationCount = 0;
 
-        if (onNotify) {
-          onNotify(reason);
+      // On first run, just initialize counts without sending notifications
+      if (this.isFirstWatcherRun) {
+        console.log('⏳ First Watcher run - initializing unit counts without notifications...');
+        for (const {resource_id, count} of counters) {
+          await this.database.updateUnitCount(resource_id, count);
         }
+        console.log(`✅ Initialized unit counts for ${counters.length} projects`);
+        this.isFirstWatcherRun = false;
+        this.isWatching = false;
+        return;
       }
 
-      // Update or insert project in database
-      const existingProject = await this.database.getProject(project.id);
-      if (existingProject) {
-        await this.database.updateProject(project);
-      } else {
-        await this.database.insertProject(project);
+      for (const {resource_id, count} of counters) {
+        const previousCount = await this.database.getUnitCount(resource_id);
+
+        // Trigger condition: (previousCount === 0 OR previousCount === null) AND currentCount > 0
+        if ((previousCount === null || previousCount === 0) && count > 0) {
+          const project = await this.database.getProject(resource_id);
+
+          if (project) {
+            // Full project details available
+            await this.notifier.sendNotification(project, 'restocked');
+            console.log(`📤 Watcher: Notification sent for ${project.project_name} (${count} units)`);
+          } else {
+            // Unknown project - send fallback
+            await this.notifier.sendUnknownProjectNotification(resource_id, count);
+            await this.database.ensureProjectExists(resource_id);
+            console.log(`📤 Watcher: Fallback notification for unknown project ${resource_id}`);
+          }
+
+          notificationCount++;
+        }
+
+        // Always update the count
+        await this.database.updateUnitCount(resource_id, count);
+      }
+
+      if (notificationCount > 0) {
+        console.log(`⚡ Watcher: Sent ${notificationCount} notifications`);
       }
     } catch (error) {
-      console.error(`❌ Error processing project ${project.id}:`, error.message);
+      console.error('❌ Watcher error:', error.message);
+      // Don't spam admin on every Watcher error (runs every 10 seconds)
+      // Only log to console unless it's critical
+    } finally {
+      this.isWatching = false;
     }
   }
 
@@ -158,8 +210,12 @@ class AqarBot {
   async shutdown() {
     console.log('\n🛑 Shutting down bot...');
 
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
+    if (this.indexerTimerId) {
+      clearInterval(this.indexerTimerId);
+    }
+
+    if (this.watcherTimerId) {
+      clearInterval(this.watcherTimerId);
     }
 
     await this.database.close();

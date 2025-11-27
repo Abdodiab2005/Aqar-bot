@@ -59,16 +59,16 @@ class Database {
               return;
             }
 
-            const hasOldSchema = columns.some(col => col.name === 'units_count' || col.name === 'price');
-            const hasNewSchema = columns.some(col => col.name === 'available_units_count');
+            const hasOldSchema = columns.some(col => col.name === 'id' && col.type === 'TEXT');
+            const hasNewSchema = columns.some(col => col.name === 'resource_id' && col.type === 'INTEGER');
 
-            if (hasOldSchema && !hasNewSchema) {
-              console.log('📦 Migrating database schema to new structure...');
+            if (hasOldSchema || (!hasNewSchema && columns.length > 0)) {
+              console.log('🔄 Detected old schema. Dropping table for clean migration...');
 
               // Drop old table and recreate (simplest approach)
               try {
                 await this._dropTable();
-                console.log('✅ Old schema dropped, new schema will be created');
+                console.log('✅ Old schema removed. New schema will be created.');
                 resolve();
               } catch (error) {
                 reject(error);
@@ -102,10 +102,18 @@ class Database {
   async _createTables() {
     const createTableSQL = `
       CREATE TABLE IF NOT EXISTS projects (
-        id TEXT PRIMARY KEY,
-        project_name TEXT NOT NULL,
-        available_units_count INTEGER NOT NULL,
-        min_non_bene_price REAL NOT NULL,
+        resource_id INTEGER PRIMARY KEY,
+        project_name TEXT,
+        available_units_count INTEGER DEFAULT 0,
+        min_non_bene_price REAL,
+        location_lat REAL,
+        location_lon REAL,
+        developer_name TEXT,
+        banner_url TEXT,
+        views_count INTEGER,
+        project_type TEXT,
+        last_indexed_at DATETIME,
+        last_watched_at DATETIME,
         last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `;
@@ -119,15 +127,15 @@ class Database {
   }
 
   /**
-   * Get project by ID
-   * @param {string} projectId - The project ID
+   * Get project by resource_id
+   * @param {number} resourceId - The resource ID
    * @returns {Promise<object|null>} Project data or null if not found
    */
-  async getProject(projectId) {
+  async getProject(resourceId) {
     return new Promise((resolve, reject) => {
       this.db.get(
-        'SELECT * FROM projects WHERE id = ?',
-        [projectId],
+        'SELECT * FROM projects WHERE resource_id = ?',
+        [resourceId],
         (err, row) => {
           if (err) reject(err);
           else resolve(row || null);
@@ -137,17 +145,60 @@ class Database {
   }
 
   /**
-   * Insert new project into database
-   * @param {object} project - Project data
+   * Get unit count for a resource_id (used by Watcher)
+   * @param {number} resourceId - The resource ID
+   * @returns {Promise<number|null>} Unit count or null if project not found
    */
-  async insertProject(project) {
-    const { id, project_name, available_units_count, min_non_bene_price } = project;
+  async getUnitCount(resourceId) {
+    return new Promise((resolve, reject) => {
+      this.db.get(
+        'SELECT available_units_count FROM projects WHERE resource_id = ?',
+        [resourceId],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row ? row.available_units_count : null);
+        }
+      );
+    });
+  }
+
+  /**
+   * Upsert project metadata (used by Indexer)
+   * Updates all metadata fields except available_units_count
+   * @param {object} project - Project data from Search API
+   */
+  async upsertProjectMetadata(project) {
+    const {
+      resource_id,
+      project_name,
+      min_non_bene_price,
+      location_lat,
+      location_lon,
+      developer_name,
+      banner_url,
+      views_count,
+      project_type
+    } = project;
 
     return new Promise((resolve, reject) => {
       this.db.run(
-        `INSERT INTO projects (id, project_name, available_units_count, min_non_bene_price, last_updated)
-         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-        [id, project_name, available_units_count, min_non_bene_price],
+        `INSERT INTO projects (
+          resource_id, project_name, min_non_bene_price, location_lat, location_lon,
+          developer_name, banner_url, views_count, project_type, last_indexed_at, last_updated
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(resource_id) DO UPDATE SET
+          project_name = excluded.project_name,
+          min_non_bene_price = excluded.min_non_bene_price,
+          location_lat = excluded.location_lat,
+          location_lon = excluded.location_lon,
+          developer_name = excluded.developer_name,
+          banner_url = excluded.banner_url,
+          views_count = excluded.views_count,
+          project_type = excluded.project_type,
+          last_indexed_at = CURRENT_TIMESTAMP,
+          last_updated = CURRENT_TIMESTAMP`,
+        [resource_id, project_name, min_non_bene_price, location_lat, location_lon,
+         developer_name, banner_url, views_count, project_type],
         (err) => {
           if (err) reject(err);
           else resolve();
@@ -157,18 +208,20 @@ class Database {
   }
 
   /**
-   * Update existing project
-   * @param {object} project - Project data
+   * Update only the unit count (used by Watcher)
+   * @param {number} resourceId - The resource ID
+   * @param {number} count - The new unit count
    */
-  async updateProject(project) {
-    const { id, project_name, available_units_count, min_non_bene_price } = project;
-
+  async updateUnitCount(resourceId, count) {
     return new Promise((resolve, reject) => {
       this.db.run(
-        `UPDATE projects
-         SET project_name = ?, available_units_count = ?, min_non_bene_price = ?, last_updated = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [project_name, available_units_count, min_non_bene_price, id],
+        `INSERT INTO projects (resource_id, available_units_count, last_watched_at, last_updated)
+         VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         ON CONFLICT(resource_id) DO UPDATE SET
+           available_units_count = excluded.available_units_count,
+           last_watched_at = CURRENT_TIMESTAMP,
+           last_updated = CURRENT_TIMESTAMP`,
+        [resourceId, count],
         (err) => {
           if (err) reject(err);
           else resolve();
@@ -178,37 +231,22 @@ class Database {
   }
 
   /**
-   * Check if project needs notification
-   * Returns true for new listings or restocked items
-   * @param {object} apiProject - Project from API
-   * @returns {Promise<object>} Object with shouldNotify flag and reason
+   * Ensure a project row exists (used by Watcher for unknown projects)
+   * Creates minimal row that will be filled by Indexer later
+   * @param {number} resourceId - The resource ID
    */
-  async shouldNotify(apiProject) {
-    const existingProject = await this.getProject(apiProject.id);
-
-    // Case A: New opportunity - NOT in DB AND available_units_count > 0
-    if (!existingProject && apiProject.available_units_count > 0) {
-      return {
-        shouldNotify: true,
-        reason: 'new_listing',
-        previousUnits: 0
-      };
-    }
-
-    // Case B: Restock alert - IS in DB, previous was 0, current > 0
-    if (existingProject && existingProject.available_units_count === 0 && apiProject.available_units_count > 0) {
-      return {
-        shouldNotify: true,
-        reason: 'restocked',
-        previousUnits: existingProject.available_units_count
-      };
-    }
-
-    return {
-      shouldNotify: false,
-      reason: null,
-      previousUnits: existingProject ? existingProject.available_units_count : 0
-    };
+  async ensureProjectExists(resourceId) {
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        `INSERT OR IGNORE INTO projects (resource_id, last_updated)
+         VALUES (?, CURRENT_TIMESTAMP)`,
+        [resourceId],
+        (err) => {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
   }
 
   /**
