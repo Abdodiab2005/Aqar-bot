@@ -108,10 +108,13 @@ class Database {
         min_non_bene_price REAL,
         location_lat REAL,
         location_lon REAL,
+        city TEXT,
+        region TEXT,
         developer_name TEXT,
         banner_url TEXT,
         views_count INTEGER,
         project_type TEXT,
+        bookable INTEGER DEFAULT 0,
         last_indexed_at DATETIME,
         last_watched_at DATETIME,
         last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -163,9 +166,9 @@ class Database {
   }
 
   /**
-   * Upsert project metadata (used by Indexer)
+   * Upsert project metadata (used by Indexer or Validator)
    * Updates all metadata fields except available_units_count
-   * @param {object} project - Project data from Search API
+   * @param {object} project - Project data from Search API or Validation API
    */
   async upsertProjectMetadata(project) {
     const {
@@ -174,31 +177,38 @@ class Database {
       min_non_bene_price,
       location_lat,
       location_lon,
+      city,
+      region,
       developer_name,
       banner_url,
       views_count,
-      project_type
+      project_type,
+      bookable
     } = project;
 
     return new Promise((resolve, reject) => {
       this.db.run(
         `INSERT INTO projects (
           resource_id, project_name, min_non_bene_price, location_lat, location_lon,
-          developer_name, banner_url, views_count, project_type, last_indexed_at, last_updated
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          city, region, developer_name, banner_url, views_count, project_type, bookable,
+          last_indexed_at, last_updated
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT(resource_id) DO UPDATE SET
           project_name = excluded.project_name,
           min_non_bene_price = excluded.min_non_bene_price,
           location_lat = excluded.location_lat,
           location_lon = excluded.location_lon,
+          city = excluded.city,
+          region = excluded.region,
           developer_name = excluded.developer_name,
           banner_url = excluded.banner_url,
           views_count = excluded.views_count,
           project_type = excluded.project_type,
+          bookable = excluded.bookable,
           last_indexed_at = CURRENT_TIMESTAMP,
           last_updated = CURRENT_TIMESTAMP`,
         [resource_id, project_name, min_non_bene_price, location_lat, location_lon,
-         developer_name, banner_url, views_count, project_type],
+         city || '', region || '', developer_name, banner_url, views_count, project_type, bookable ? 1 : 0],
         (err) => {
           if (err) reject(err);
           else resolve();

@@ -67,27 +67,41 @@ class Notifier {
   _formatMessage(project, reason) {
     const developerName =
       project.developer_name || "وزارة الشؤون البلدية والقروية والإسكان";
-    const projectType = this._getProjectType(project.project_type);
     const priceFormatted = this._formatNumber(project.min_non_bene_price, true);
-    const viewsFormatted = this._formatNumber(project.views_count, false);
     const mapsLink = Scraper.generateMapsLink(
       project.location_lat,
       project.location_lon
     );
 
-    let message = `<b>🔥 فرصة عقارية متاحة الآن!</b>\n\n`;
-    message += `📍 <b>الاسم:</b> ${this._escapeHtml(project.project_name)}\n`;
-    message += `🏢 <b>المطور:</b> ${this._escapeHtml(developerName)}\n`;
-    message += `🏷 <b>النوع:</b> ${projectType}\n\n`;
-    message += `💰 <b>السعر:</b> ${priceFormatted}\n`;
-    message += `⚡️ <b>الوحدات المتاحة:</b> ${project.available_units_count} وحدة\n`;
-    message += `👀 <b>المشاهدات:</b> ${viewsFormatted} مشاهدة\n\n`;
-
-    if (mapsLink) {
-      message += `🗺 <b>الموقع:</b> <a href="${mapsLink}">عرض على خرائط جوجل</a>\n\n`;
+    // Format location string
+    let locationStr = "";
+    if (project.city && project.region) {
+      locationStr = `${project.city} - ${project.region}`;
+    } else if (project.city) {
+      locationStr = project.city;
+    } else if (project.region) {
+      locationStr = project.region;
     }
 
-    message += `<code>ID: ${project.resource_id}</code>`;
+    let message = `<b>🔥 عاجل: توفرت قطع جديدة!</b>\n\n`;
+    message += `📍 <b>الاسم:</b> ${this._escapeHtml(project.project_name)}\n`;
+
+    if (locationStr) {
+      message += `🌍 <b>الموقع:</b> ${this._escapeHtml(locationStr)}\n`;
+    }
+
+    message += `💰 <b>السعر:</b> ${priceFormatted}\n`;
+    message += `⚡️ <b>الوحدات المتاحة:</b> ${project.available_units_count} وحدة\n`;
+
+    if (project.developer_name) {
+      message += `🏢 <b>المطور:</b> ${this._escapeHtml(developerName)}\n`;
+    }
+
+    if (mapsLink) {
+      message += `\n🗺 <a href="${mapsLink}">عرض على خرائط جوجل</a>`;
+    }
+
+    message += `\n\n<code>ID: ${project.resource_id}</code>`;
 
     return message;
   }

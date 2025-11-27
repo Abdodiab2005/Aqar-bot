@@ -1,4 +1,12 @@
 import axios from "axios";
+import fs from "fs";
+import path from "path";
+
+// Ensure logs directory exists
+const logsDir = "./logs";
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir, { recursive: true });
+}
 
 /**
  * API Scraper for fetching land availability data
@@ -28,6 +36,19 @@ class Scraper {
       if (!response.data || !response.data.data) {
         throw new Error("Invalid Search API response structure");
       }
+
+      // Save raw API response to log file
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const filepath = path.join(
+        logsDir,
+        `${timestamp}_search_api_raw_response.json`
+      );
+      fs.writeFileSync(
+        filepath,
+        JSON.stringify(response.data, null, 2),
+        "utf8"
+      );
+      console.log(`📝 Saved raw Search API response: ${filepath}`);
 
       return this._normalizeSearchResponse(response.data.data);
     } catch (error) {
@@ -61,6 +82,19 @@ class Scraper {
       if (!response.data || !response.data.buy_units_count) {
         throw new Error("Invalid Counters API response structure");
       }
+
+      // Save raw API response to log file
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const filepath = path.join(
+        logsDir,
+        `${timestamp}_counters_api_raw_response.json`
+      );
+      fs.writeFileSync(
+        filepath,
+        JSON.stringify(response.data, null, 2),
+        "utf8"
+      );
+      console.log(`📝 Saved raw Counters API response: ${filepath}`);
 
       return this._normalizeCountersResponse(response.data);
     } catch (error) {
@@ -122,6 +156,99 @@ class Scraper {
       return null;
     }
     return `https://www.google.com/maps?q=${lat},${lon}`;
+  }
+
+  /**
+   * Fetch and validate project details from validation API
+   * @param {number} resourceId - Resource ID to validate
+   * @returns {Promise<object|null>} Project data if valid, null if invalid
+   */
+  async validateProject(resourceId) {
+    try {
+      const validationUrl = `https://sakani.sa/mainIntermediaryApi/v4/projects/${resourceId}?include=amenities`;
+
+      console.log(`🔍 Validating project ${resourceId}...`);
+
+      const response = await axios.get(validationUrl, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          Accept: "application/json",
+        },
+        timeout: 10000, // 10 seconds timeout
+      });
+
+      if (!response.data || !response.data.data) {
+        console.log(`❌ Invalid validation response for ${resourceId}`);
+        return null;
+      }
+
+      const project = response.data.data;
+      const attrs = project.attributes;
+
+      // Save raw validation response to log
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const filepath = path.join(
+        logsDir,
+        `${timestamp}_validation_${resourceId}.json`
+      );
+      fs.writeFileSync(
+        filepath,
+        JSON.stringify(response.data, null, 2),
+        "utf8"
+      );
+      console.log(`📝 Saved validation response: ${filepath}`);
+
+      // Critical validation checks
+      const isBookable = attrs.bookable === true;
+      const availableUnits = attrs.units_statistic_data?.available_units_count || 0;
+      const hasUnits = availableUnits > 0;
+
+      console.log(`   bookable: ${isBookable}`);
+      console.log(`   available_units: ${availableUnits}`);
+
+      // Both conditions must be true
+      if (!isBookable || !hasUnits) {
+        console.log(`❌ Validation failed for ${resourceId}: bookable=${isBookable}, units=${availableUnits}`);
+        return null;
+      }
+
+      console.log(`✅ Validation passed for ${resourceId}`);
+
+      // Extract and normalize data
+      const location = attrs.location || {};
+      return {
+        resource_id: resourceId,
+        project_name: attrs.name,
+        available_units_count: availableUnits,
+        min_non_bene_price: attrs.units_statistic_data?.min_non_bene_price || 0,
+        location_lat: location.lat || null,
+        location_lon: location.lon || null,
+        city: attrs.city_obj?.name_ar || "",
+        region: attrs.region_obj?.name_ar || "",
+        developer_name: attrs.developer_name || "",
+        banner_url: attrs.banner_url || "",
+        views_count: attrs.views_count || 0,
+        project_type: attrs.project_type || "",
+        bookable: attrs.bookable,
+      };
+    } catch (error) {
+      console.error(`❌ Validation error for ${resourceId}:`, error.message);
+
+      // Log validation errors
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const filepath = path.join(
+        logsDir,
+        `${timestamp}_validation_error_${resourceId}.json`
+      );
+      fs.writeFileSync(
+        filepath,
+        JSON.stringify({ error: error.message, stack: error.stack }, null, 2),
+        "utf8"
+      );
+
+      return null;
+    }
   }
 
   /**
