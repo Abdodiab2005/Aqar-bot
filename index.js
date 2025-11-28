@@ -61,22 +61,6 @@ class AqarBot {
   }
 
   /**
-   * Save JSON data to log file
-   * @param {string} filename - Log filename
-   * @param {object} data - Data to save
-   */
-  saveJsonLog(filename, data) {
-    try {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filepath = path.join(logsDir, `${timestamp}_${filename}`);
-      fs.writeFileSync(filepath, JSON.stringify(data, null, 2), "utf8");
-      console.log(`📝 Saved log: ${filepath}`);
-    } catch (error) {
-      console.error(`❌ Failed to save log ${filename}:`, error.message);
-    }
-  }
-
-  /**
    * Initialize the bot
    */
   async initialize() {
@@ -257,20 +241,12 @@ class AqarBot {
         console.log(
           `\n🎯 Check complete: Sent ${notificationCount} verified notifications`
         );
-        this.saveJsonLog("notifications.json", {
-          timestamp,
-          totalNotifications: notificationCount,
-          notifications,
-        });
       } else {
         console.log(`\nℹ️  Check complete: No new opportunities found`);
       }
     } catch (error) {
       console.error("❌ Check error:", error.message);
-      this.saveJsonLog("check_error.json", {
-        error: error.message,
-        stack: error.stack,
-      });
+
       await this.notifier.sendErrorNotification(
         `Check failed: ${error.message}`
       );
