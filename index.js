@@ -2,17 +2,9 @@ import dotenv from "dotenv";
 import Database from "./src/database.js";
 import Scraper from "./src/scraper.js";
 import Notifier from "./src/notifier.js";
-import fs from "fs";
-import path from "path";
 
 // Load environment variables
 dotenv.config();
-
-// Ensure logs directory exists
-const logsDir = "./logs";
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
-}
 
 /**
  * Main Bot Application
@@ -23,8 +15,7 @@ class AqarBot {
 
     this.database = new Database(process.env.DB_PATH || "./data/projects.db");
     // Use the specific filtered URL provided by the user
-    const searchApiUrl =
-      "https://sakani.sa/marketplaceApi/search/v3/location?filter%5Bmarketplace_purpose%5D=buy&filter%5Bnhc%5D=false&filter%5Bproduct_types%5D=lands&filter%5Btarget_segment_info%5D=beneficiary&filter%5Bland_type%5D=moh_lands&filter%5Bmode%5D=maps&filter%5Bpurchasing_power%5D=0&filter%5Buse_default_listing%5D=false&sort=-views_count";
+    const searchApiUrl = process.env.SEARCH_API_URL;
     this.scraper = new Scraper(searchApiUrl, process.env.COUNTERS_API_URL);
 
     // Parse comma-separated admin IDs

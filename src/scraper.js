@@ -2,12 +2,6 @@ import axios from "axios";
 import fs from "fs";
 import path from "path";
 
-// Ensure logs directory exists
-const logsDir = "./logs";
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true });
-}
-
 /**
  * API Scraper for fetching land availability data
  * Hybrid Architecture: Supports both Search API (metadata) and Counters API (unit counts)
@@ -36,19 +30,6 @@ class Scraper {
       if (!response.data || !response.data.data) {
         throw new Error("Invalid Search API response structure");
       }
-
-      // Save raw API response to log file
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filepath = path.join(
-        logsDir,
-        `${timestamp}_search_api_raw_response.json`
-      );
-      fs.writeFileSync(
-        filepath,
-        JSON.stringify(response.data, null, 2),
-        "utf8"
-      );
-      console.log(`📝 Saved raw Search API response: ${filepath}`);
 
       return this._normalizeSearchResponse(response.data.data);
     } catch (error) {
@@ -82,19 +63,6 @@ class Scraper {
       if (!response.data || !response.data.buy_units_count) {
         throw new Error("Invalid Counters API response structure");
       }
-
-      // Save raw API response to log file
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filepath = path.join(
-        logsDir,
-        `${timestamp}_counters_api_raw_response.json`
-      );
-      fs.writeFileSync(
-        filepath,
-        JSON.stringify(response.data, null, 2),
-        "utf8"
-      );
-      console.log(`📝 Saved raw Counters API response: ${filepath}`);
 
       return this._normalizeCountersResponse(response.data);
     } catch (error) {
@@ -195,19 +163,6 @@ class Scraper {
       const project = response.data.data;
       const attrs = project.attributes;
 
-      // Save raw validation response to log
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filepath = path.join(
-        logsDir,
-        `${timestamp}_validation_${resourceId}.json`
-      );
-      fs.writeFileSync(
-        filepath,
-        JSON.stringify(response.data, null, 2),
-        "utf8"
-      );
-      console.log(`📝 Saved validation response: ${filepath}`);
-
       // Critical validation checks
       const isBookable = attrs.bookable === true;
       const availableUnits =
@@ -246,18 +201,6 @@ class Scraper {
       };
     } catch (error) {
       console.error(`❌ Validation error for ${resourceId}:`, error.message);
-
-      // Log validation errors
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const filepath = path.join(
-        logsDir,
-        `${timestamp}_validation_error_${resourceId}.json`
-      );
-      fs.writeFileSync(
-        filepath,
-        JSON.stringify({ error: error.message, stack: error.stack }, null, 2),
-        "utf8"
-      );
 
       return null;
     }
