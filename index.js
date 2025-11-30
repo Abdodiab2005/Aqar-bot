@@ -143,7 +143,7 @@ class AqarBot {
       for (const { resource_id, count } of counters) {
         const previousCount = await this.database.getUnitCount(resource_id);
 
-        // Trigger: 0→N transition
+        // Trigger: 0→N transition (Source of Truth: Counters API)
         if ((previousCount === null || previousCount === 0) && count > 0) {
           console.log(
             `\n🚨 Trigger detected for project ${resource_id}: ${
@@ -160,64 +160,81 @@ class AqarBot {
             step3_validation: null,
           };
 
-          // STEP 2 VERIFICATION: Check Search API data
+          // STEP 2: Enrichment & Type Validation (Search API)
           const searchData = searchMap.get(resource_id);
 
           if (!searchData) {
             console.log(
-              `⚠️  Step 2: Project ${resource_id} not found in Search API - Proceeding to Validation (Step 3)`
+              `⚠️  Step 2: Project ${resource_id} not found in Search API - Skipping`
             );
-            notificationData.step2_search = "not_found_proceeding";
-            // Do not skip, proceed to Step 3
-          } else {
-            const isBookable =
-              searchData.bookable === true || searchData.bookable === 1;
-            const searchUnits = searchData.available_units_count || 0;
-
-            console.log(`📋 Step 2: Search API check for ${resource_id}:`);
-            console.log(`   bookable: ${isBookable}`);
-            console.log(`   available_units_count: ${searchUnits}`);
-
-            // MODIFIED: Proceed to Step 3 even if Search API shows 0 units or is not bookable
-            // We rely on Step 3 (Validation) as the source of truth
-            console.log(
-              `✅ Step 2: Project found in Search API. Proceeding to Validation...`
-            );
-            notificationData.step2_search = "passed";
-          }
-
-          // STEP 3 VALIDATION: Final confirmation with mainIntermediaryApi
-          console.log(
-            `🔍 Step 3: Final validation with mainIntermediaryApi...`
-          );
-          const validatedProject = await this.scraper.validateProject(
-            resource_id
-          );
-
-          if (!validatedProject) {
-            console.log(`❌ Step 3: Validation failed for ${resource_id}`);
-            notificationData.step3_validation = "failed";
-            notifications.push(notificationData);
+            notificationData.step2_search = "not_found";
+            // Update counter to avoid re-triggering if it stays > 0
             await this.database.updateUnitCount(resource_id, count);
             continue;
           }
 
-          console.log(`✅ Step 3: Validation passed`);
-          notificationData.step3_validation = "passed";
-          notificationData.project_name = validatedProject.project_name;
-          notificationData.finalUnits = validatedProject.available_units_count;
+          // Strict Type Validation
+          if (searchData.project_type !== "lands_moh_land") {
+            console.log(
+              `⚠️  Step 2: Project ${resource_id} is type '${searchData.project_type}' (not lands_moh_land) - Skipping`
+            );
+            notificationData.step2_search = "invalid_type";
+            await this.database.updateUnitCount(resource_id, count);
+            continue;
+          }
+
+          console.log(
+            `✅ Step 2: Validated 'lands_moh_land' for ${resource_id}`
+          );
+          notificationData.step2_search = "passed";
+
+          // STEP 3: Soft Validation (Validation API)
+          // We try to get the most up-to-date details, but fallback to Search API if it fails
+          console.log(`🔍 Step 3: Soft validation with mainIntermediaryApi...`);
+
+          let finalProjectData = null;
+          const validatedProject = await this.scraper.validateProject(
+            resource_id
+          );
+
+          if (validatedProject) {
+            console.log(`✅ Step 3: Validation passed (Using fresh data)`);
+            notificationData.step3_validation = "passed";
+            finalProjectData = validatedProject;
+          } else {
+            console.log(
+              `⚠️  Step 3: Validation failed/timeout - FALLBACK to Search API data`
+            );
+            notificationData.step3_validation = "fallback";
+
+            // Construct project object from Search API data (Step 2)
+            // We use the 'count' from Counters API (Step 1) as it's the source of truth for availability
+            finalProjectData = {
+              ...searchData,
+              available_units_count: count, // Override with live counter
+            };
+          }
+
+          notificationData.project_name = finalProjectData.project_name;
+          notificationData.finalUnits = finalProjectData.available_units_count;
 
           // ALL CHECKS PASSED - SEND NOTIFICATION
-          console.log(`\n📤 All checks passed - Sending notification:`);
-          console.log(`   Name: ${validatedProject.project_name}`);
+          console.log(`\n📤 Sending notification for ${resource_id}:`);
+          console.log(`   Name: ${finalProjectData.project_name}`);
           console.log(
-            `   Location: ${validatedProject.city} - ${validatedProject.region}`
+            `   Location: ${finalProjectData.city} - ${finalProjectData.region}`
           );
-          console.log(`   Price: ${validatedProject.min_non_bene_price} SAR`);
-          console.log(`   Units: ${validatedProject.available_units_count}`);
+          console.log(`   Units: ${finalProjectData.available_units_count}`);
+          console.log(
+            `   Source: ${
+              notificationData.step3_validation === "passed"
+                ? "Validation API"
+                : "Search API (Fallback)"
+            }`
+          );
 
-          await this.database.upsertProjectMetadata(validatedProject);
-          await this.notifier.sendNotification(validatedProject, "available");
+          await this.database.upsertProjectMetadata(finalProjectData);
+          await this.notifier.sendNotification(finalProjectData, "available");
           console.log(`✅ Notification sent successfully`);
 
           notificationCount++;
